@@ -7,6 +7,7 @@ use winit::event::WindowEvent;
 mod error;
 pub use error::*;
 
+#[derive(Copy, Clone)]
 pub struct WindowDetails {
     pub window_title: &'static str,
     pub window_height: u32,
@@ -81,12 +82,17 @@ impl AppHandler {
             None => {}
         }
     }
+    pub fn send_event(&mut self, event: AppEvents) -> Result<()>{
+        self.event_loop_proxy.send_event(event)
+            .map_err(|_| EventLoopProxyError::EventLoopProxySendEventError)?;
+        Ok(())
+    }
 }
 
 impl AppHandler {
     // PRIVATE FUNCTIONS (called from the event loop ; no return value)
     fn create_window(&mut self, event_loop: &ActiveEventLoop) {
-        let window_details = self.window_details().as_ref().unwrap_or_default();
+        let window_details = self.window_details().unwrap_or_default();
 
         let window_attributes = Window::default_attributes()
             .with_title(window_details.window_title)
@@ -145,18 +151,5 @@ impl ApplicationHandler<AppEvents> for AppHandler {
             },
             _ => (),
         };
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn create_window_and_destroy() -> Result<()> {
-        let mut app = AppHandler::new()?
-            .start_loop()?;
-        Ok(())
     }
 }

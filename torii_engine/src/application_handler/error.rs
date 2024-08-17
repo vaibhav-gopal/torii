@@ -1,6 +1,5 @@
 ﻿use thiserror::Error;
-pub use anyhow;
-pub use anyhow::Context;
+use anyhow;
 
 use winit::error::{EventLoopError, OsError};
 
@@ -14,6 +13,8 @@ pub enum Error {
     WindowCreationError(#[from] WindowCreationError),
     #[error(transparent)]
     WindowAccessError(#[from] WindowAccessError),
+    #[error(transparent)]
+    EventLoopProxyError(#[from] EventLoopProxyError),
     #[error(transparent)]
     ContextError(#[from] anyhow::Error)
 }
@@ -45,4 +46,10 @@ pub enum WindowAccessError {
 pub enum WindowCreationError {
     #[error("Failed to create window")]
     OSWindowCreationError(#[from] OsError),
+}
+
+#[derive(Error, Debug)]
+pub enum EventLoopProxyError {
+    #[error("Failed to send event through event loop proxy ; Event loop closed")]
+    EventLoopProxySendEventError,
 }

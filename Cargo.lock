@@ -1137,6 +1137,7 @@ dependencies = [
 name = "torii_game"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "torii_engine",
 ]
 
