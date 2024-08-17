@@ -5,8 +5,12 @@ edition = "2021"
 
 [dependencies]
 winit = "0.30"
-anyhow = "1.0"
+thiserror = "1.0.63"
+anyhow = "1.0.86"
 
 [dependencies.ash]
 version = "0.38"
 features = ["linked"]
+
+[dependencies.ash-window]
+version = "0.13.0"
