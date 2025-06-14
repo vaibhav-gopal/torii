@@ -1,37 +1,25 @@
-use winit::window::{Window, WindowId};
+use winit::window::{Window, WindowAttributes, WindowId};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
 
 mod error;
 pub use error::*;
 
-#[derive(Copy, Clone)]
-pub struct WindowDetails {
-    pub window_title: &'static str,
-    pub window_height: u32,
-    pub window_width: u32,
-}
-impl Default for WindowDetails{
-    fn default() -> Self {
-        WindowDetails {
-            window_title: "Torii Application",
-            window_height: 800,
-            window_width: 600,
-        }
-    }
+struct WindowWrapper {
+    inner: Option<Window>,
+    state: WindowAttributes
 }
 
 pub enum AppEvents {
-    CreateWindow,
+    CreateWindow(WindowAttributes),
+    KillWindow(WindowId)
 }
 
 pub struct AppHandler {
     event_loop: Option<EventLoop<AppEvents>>,
     event_loop_proxy: EventLoopProxy<AppEvents>,
-    window_details: Option<WindowDetails>,
-    windows: Vec<Window>,
+    windows: Vec<WindowWrapper>,
     error_callback: Option<Box<dyn FnMut(Error)>>,
 }
 
@@ -48,7 +36,6 @@ impl AppHandler {
         let app_handler = AppHandler {
             event_loop: Some(event_loop),
             event_loop_proxy,
-            window_details: None,
             windows: vec![],
             error_callback: None,
         };
@@ -64,13 +51,7 @@ impl AppHandler {
     }
     
     // SETTERS, GETTERS, CALLBACK EXECUTORS (non chainable)
-    pub fn set_window_details(&mut self, window_details: Option<WindowDetails>) {
-        self.window_details = window_details;
-    }
-    pub fn window_details(&self) -> &Option<WindowDetails> {
-        &self.window_details
-    }
-    pub fn windows(&self) -> &Vec<Window> {
+    pub fn windows(&self) -> &Vec<WindowWrapper> {
         &self.windows
     }
     pub fn set_error_callback(&mut self, error_callback: Option<Box<dyn FnMut(Error)>>) {
@@ -91,20 +72,19 @@ impl AppHandler {
 
 impl AppHandler {
     // PRIVATE FUNCTIONS (called from the event loop ; no return value)
-    fn create_window(&mut self, event_loop: &ActiveEventLoop) {
-        let window_details = self.window_details().unwrap_or_default();
-
-        let window_attributes = Window::default_attributes()
-            .with_title(window_details.window_title)
-            .with_inner_size(LogicalSize::new(window_details.window_width, window_details.window_height));
-
+    fn create_window(&mut self, event_loop: &ActiveEventLoop, attributes: WindowAttributes) {
         let window_result = event_loop
-            .create_window(window_attributes)
+            .create_window(attributes.clone())
             .map_err(|e| WindowCreationError::OSWindowCreationError(e));
 
         match window_result {
             Ok(window) => {
-                self.windows.push(window);
+                self.windows.push(
+                    WindowWrapper {
+                        inner: Some(window),
+                        state: attributes,
+                    }
+                );
             },
             Err(error) => {
                 self.error_callback(error.into());
@@ -118,16 +98,24 @@ impl ApplicationHandler<AppEvents> for AppHandler {
         self.create_window(event_loop);
     }
 
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        todo!()
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvents) {
         match event {
-            AppEvents::CreateWindow => {
-                self.create_window(event_loop);
+            AppEvents::CreateWindow(attr) => {
+                self.create_window(event_loop, attr);
             },
+            AppEvents::KillWindow(id) => {
+                todo!()
+            }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
-        let window_index = match self.windows.iter().position(|window| window.id() == window_id)
+        let window_index = match self.windows.iter()
+            .position(|window| window.inner?.id() == window_id)
             .ok_or(WindowAccessError::WindowNotFoundError(window_id.into())) {
             Ok(idx) => idx,
             Err(error) => {
