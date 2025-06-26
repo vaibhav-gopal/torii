@@ -2,6 +2,7 @@
 use anyhow;
 
 use winit::error::{EventLoopError, OsError};
+use crate::application_handler::WindowIdentifier;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -10,9 +11,9 @@ pub enum Error {
     #[error(transparent)]
     StartLoopError(#[from] StartLoopError),
     #[error(transparent)]
-    WindowCreationError(#[from] WindowCreationError),
+    WindowObjectError(#[from] WindowObjectError),
     #[error(transparent)]
-    WindowAccessError(#[from] WindowAccessError),
+    WindowError(#[from] WindowError),
     #[error(transparent)]
     EventLoopProxyError(#[from] EventLoopProxyError),
     #[error(transparent)]
@@ -37,15 +38,17 @@ pub enum StartLoopError {
 }
 
 #[derive(Error, Debug)]
-pub enum WindowAccessError {
-    #[error("Window corresponding to window id {0} not found in AppHandler.windows")]
-    WindowNotFoundError(u64)
+pub enum WindowError {
+    #[error("Window corresponding to {0:?} not found in AppHandler.windows")]
+    WindowNotFoundError(WindowIdentifier),
+    #[error("Failed to create window")]
+    WindowCreationError(#[from] OsError),
 }
 
 #[derive(Error, Debug)]
-pub enum WindowCreationError {
-    #[error("Failed to create window")]
-    OSWindowCreationError(#[from] OsError),
+pub enum WindowObjectError {
+    #[error("Unable to resume window")]
+    WindowResumeError(#[from] WindowError),
 }
 
 #[derive(Error, Debug)]

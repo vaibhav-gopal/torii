@@ -1,4 +1,3 @@
-use std::ops::Deref;
 use winit::window::{Window, WindowAttributes, WindowId};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
@@ -8,14 +7,56 @@ use winit::event::{WindowEvent};
 mod error;
 pub use error::*;
 
-pub enum AppEvents {
-    CreateWindow(Option<WindowAttributes>),
-    KillWindow(WindowId)
+pub type WindowIdentifierMask = u32;
+pub type WindowIdentifierUUID = u32;
+
+#[derive(Debug, Clone, Copy)]
+pub enum WindowIdentifier {
+    // User given window mask (up to 32)
+    Mask(WindowIdentifierMask),
+    // User given window ID
+    UUID(WindowIdentifierUUID),
+    // WindowId (part of winit crate)
+    WindowId(WindowId)
 }
+
+pub type WindowAttributeBuilderCallback = Option<Box<dyn Fn(&WindowAttributes) -> WindowAttributes>>;
 
 pub struct WindowAttributeBuilder {
     inner: WindowAttributes,
-    callback: Option<Box<dyn FnMut(WindowAttributes) -> WindowAttributes>>
+    callback: WindowAttributeBuilderCallback
+}
+
+enum WindowState {
+    Active(Window),
+    Suspended
+}
+
+struct WindowObject {
+    state: WindowState,
+    attr: WindowAttributes,
+    mask: WindowIdentifierMask,
+    uuid: WindowIdentifierUUID,
+}
+
+struct AppWindowOptions {
+    resume_mask: WindowIdentifierMask
+}
+
+pub enum AppEvents {
+    CreateWindow{attr: Option<WindowAttributes>, mask: WindowIdentifierMask, uuid: WindowIdentifierUUID},
+    KillWindow(WindowIdentifier)
+}
+
+pub type AppHandlerErrorCallback = Option<Box<dyn Fn(Error)>>;
+
+struct AppHandler {
+    event_loop: Option<EventLoop<AppEvents>>,
+    event_loop_proxy: EventLoopProxy<AppEvents>,
+    error_callback: AppHandlerErrorCallback,
+    windows: Vec<WindowObject>,
+    attr_builder: WindowAttributeBuilder,
+    window_options: AppWindowOptions
 }
 
 impl Default for WindowAttributeBuilder {
@@ -31,7 +72,7 @@ impl Default for WindowAttributeBuilder {
 }
 
 impl WindowAttributeBuilder {
-    pub fn new(inner: WindowAttributes, callback: Option<Box<dyn FnMut(WindowAttributes) -> WindowAttributes>>) -> Self {
+    pub fn new(inner: WindowAttributes, callback: WindowAttributeBuilderCallback) -> Self {
         WindowAttributeBuilder {
             inner,
             callback,
@@ -40,8 +81,8 @@ impl WindowAttributeBuilder {
     
     pub fn build(&self) -> WindowAttributes {
         let mut attr = self.inner.clone();
-        if let Some(&callback) = self.callback.as_ref() {
-            attr = (*callback)(attr)
+        if let Some(callback) = &self.callback {
+            attr = callback(&attr)
         }
         attr
     }
@@ -50,28 +91,65 @@ impl WindowAttributeBuilder {
         self.inner = inner;
     }
 
-    pub fn set_callback(&mut self, callback: Option<Box<dyn FnMut(WindowAttributes) -> WindowAttributes>>) {
+    pub fn set_callback(&mut self, callback: WindowAttributeBuilderCallback) {
         self.callback = callback;
     }
 }
 
-enum WindowState {
-    Active(Window),
-    Suspended
+impl WindowObject {
+    fn resume(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        match self.state {
+            WindowState::Active(_) => {
+                Ok(())
+            }
+            WindowState::Suspended => {
+                let window = event_loop
+                    .create_window(self.attr.clone())
+                    .map_err(|e| WindowObjectError::WindowResumeError(WindowError::WindowCreationError(e)))?;
+                self.state = WindowState::Active(window);
+                Ok(())
+            }
+        }
+    }
+    fn suspend(&mut self) -> Result<()> {
+        match self.state {
+            WindowState::Active(_) => {
+                self.state = WindowState::Suspended;
+                Ok(())
+            }
+            WindowState::Suspended => {
+                Ok(())
+            }
+        }
+    }
+    fn check_match(&self, id: WindowIdentifier) -> bool {
+        match id {
+            WindowIdentifier::Mask(mask) => {
+                (self.mask & mask) > 1
+            }
+            WindowIdentifier::UUID(uuid) => {
+                self.uuid == uuid
+            }
+            WindowIdentifier::WindowId(id) => {
+                match &self.state {
+                    WindowState::Active(window) => {
+                        window.id() == id
+                    }
+                    WindowState::Suspended => {
+                        false
+                    }
+                }
+            }
+        }
+    }
 }
 
-struct WindowObject {
-    state: WindowState,
-    attr: WindowAttributes,
-    uuid: u32
-}
-
-struct AppHandler {
-    event_loop: Option<EventLoop<AppEvents>>,
-    event_loop_proxy: EventLoopProxy<AppEvents>,
-    error_callback: Option<Box<dyn FnMut(Error)>>,
-    windows: Vec<WindowObject>,
-    attr_builder: WindowAttributeBuilder,
+impl Default for AppWindowOptions {
+    fn default() -> Self {
+        AppWindowOptions {
+            resume_mask: 0b1
+        }
+    }
 }
 
 impl AppHandler {
@@ -89,7 +167,8 @@ impl AppHandler {
             event_loop_proxy,
             error_callback: None,
             windows: vec![],
-            attr_builder: WindowAttributeBuilder::default()
+            attr_builder: WindowAttributeBuilder::default(),
+            window_options: AppWindowOptions::default()
         };
 
         Ok(app_handler)
@@ -106,16 +185,10 @@ impl AppHandler {
     pub fn windows(&self) -> &Vec<WindowObject> {
         &self.windows
     }
-    pub fn set_error_callback(&mut self, error_callback: Option<Box<dyn FnMut(Error)>>) {
+    pub fn set_error_callback(&mut self, error_callback: AppHandlerErrorCallback) {
         self.error_callback = error_callback;
     }
-    pub fn error_callback(&mut self, error: Error) {
-        match self.error_callback.as_mut() {
-            Some(callback) => {(*callback)(error)}
-            None => {}
-        }
-    }
-    pub fn send_event(&mut self, event: AppEvents) -> Result<()>{
+    pub fn send_event(&mut self, event: AppEvents) -> Result<()> {
         self.event_loop_proxy.send_event(event)
             .map_err(|_| EventLoopProxyError::EventLoopProxySendEventError)?;
         Ok(())
@@ -124,102 +197,102 @@ impl AppHandler {
 
 impl AppHandler {
     // PRIVATE FUNCTIONS (called from the event loop ; no return value)
-    fn resume_all(&mut self, event_loop: &ActiveEventLoop) {
-        if (!self.resumed) {
-            for window_wrapper in self.windows.iter_mut() {
-                let window_result = event_loop
-                    .create_window(window_wrapper.attr.clone())
-                    .map_err(|e| WindowCreationError::OSWindowCreationError(e));
-                
-                match window_result {
-                    Ok(window) => {
-                        window_wrapper.inner = Some(window);
-                    }
-                    Err(error) => {
-                        self.error_callback(error.into());
-                    }
-                }
-            }
+    fn error_callback(&self, error: Error) {
+        match &self.error_callback {
+            Some(callback) => {callback(error)}
+            None => {}
         }
-        self.resumed = true;
     }
     
-    fn suspend_all(&mut self, event_loop: &ActiveEventLoop) {
-        if (self.resumed) {
-            for window in self.windows.iter_mut() {
-                drop(window.inner.take()); // take owned window and drop it
-            }
-        }
-        self.resumed = false;
+    fn window_index(&self, id: WindowIdentifier) -> Result<usize> {
+        let window_index = self.windows.iter()
+            .position(|obj| obj.check_match(id))
+            .ok_or(WindowError::WindowNotFoundError(id).into());
+        window_index
     }
     
-    fn create_window(&mut self, event_loop: &ActiveEventLoop, attributes: Option<WindowAttributes>) {
+    fn resume_window(&mut self, event_loop: &ActiveEventLoop, id: WindowIdentifier) -> Result<()> {
+        let idx = self.window_index(id)?;
+        self.windows[idx].resume(event_loop)?;
+        Ok(())
+    }
+    
+    fn suspend_window(&mut self, id: WindowIdentifier) -> Result<()> {
+        let idx = self.window_index(id)?;
+        self.windows[idx].suspend()?;
+        Ok(())
+    }
+    
+    fn create_window(&mut self, event_loop: &ActiveEventLoop, attributes: Option<WindowAttributes>, mask: WindowIdentifierMask, uuid: WindowIdentifierUUID) -> Result<()> {
         let attributes = attributes.unwrap_or(self.attr_builder.build());
-        
-        let window_result = event_loop
+        let window = event_loop
             .create_window(attributes.clone())
-            .map_err(|e| WindowCreationError::OSWindowCreationError(e));
-
-        match window_result {
-            Ok(window) => {
-                self.windows.push(
-                    WindowObject {
-                        state: WindowState::Active(window),
-                        attr: attributes,
-                    }
-                );
-            },
-            Err(error) => {
-                self.error_callback(error.into());
+            .map_err(|e| WindowError::WindowCreationError(e))?;
+        self.windows.push(
+            WindowObject {
+                state: WindowState::Active(window),
+                attr: attributes,
+                mask,
+                uuid,
             }
-        };
+        );
+        Ok(())
     }
     
-    fn destroy_window(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
-        let window_index = match self.windows.iter()
-            .position(|obj| if let WindowState::Active(window) = &obj.state {window.id() == id} else {false})
-            .ok_or(WindowAccessError::WindowNotFoundError(id.into())) {
-            Ok(idx) => idx,
-            Err(error) => {
-                self.error_callback(error.into());
-                return;
-            },
-        };
-        
-        self.windows.swap_remove(window_index);
+    fn destroy_window(&mut self, id: WindowIdentifier) -> Result<()> {
+        let idx = self.window_index(id)?;
+        drop(self.windows.swap_remove(idx));
+        Ok(())
     }
 }
 
 impl ApplicationHandler<AppEvents> for AppHandler {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.resume_all(event_loop);
-    }
-
-    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        self.suspend_all(event_loop);
+        match self.resume_window(event_loop, WindowIdentifier::Mask(self.window_options.resume_mask)) {
+            Ok(_) => {}
+            Err(err) => {
+                self.error_callback(err);
+            }
+        }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvents) {
+        let result;
         match event {
-            AppEvents::CreateWindow(attr) => {
-                self.create_window(event_loop, attr);
+            AppEvents::CreateWindow{attr, mask, uuid} => {
+                result = self.create_window(event_loop, attr, mask, uuid);
             },
             AppEvents::KillWindow(id) => {
-                self.destroy_window(event_loop, id);
+                result = self.destroy_window(id);
+            }
+        }
+        
+        match result {
+            Ok(_) => {}
+            Err(err) => {
+                self.error_callback(err);
             }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
-        let window_index = match self.windows.iter()
-            .position(|window| window.inner?.id() == window_id)
-            .ok_or(WindowAccessError::WindowNotFoundError(window_id.into())) {
-            Ok(idx) => idx,
-            Err(error) => {
-                self.error_callback(error.into());
+        let window_index;
+        match self.window_index(WindowIdentifier::WindowId(window_id)) {
+            Ok(idx) => {
+                window_index = idx;
+            }
+            Err(err) => {
+                self.error_callback(err);
                 return;
-            },
-        };
+            }
+        }
+        
+        let window: &Window;
+        if let WindowState::Active(win) = &self.windows[window_index].state {
+            window = win;
+        } else {
+            unreachable!();
+        }
         
         match event {
             WindowEvent::CloseRequested => {
@@ -232,14 +305,18 @@ impl ApplicationHandler<AppEvents> for AppHandler {
                 }
             },
             WindowEvent::RedrawRequested => {
-                self.windows[window_index]
-                    .inner
-                    .
-                    .as_mut()
-                    .unwrap()
-                    .request_redraw();
+                window.request_redraw();
             },
-            _ => (),
+            _ => {},
         };
+    }
+
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        match self.suspend_window(WindowIdentifier::Mask(WindowIdentifierMask::MAX)) {
+            Ok(_) => {}
+            Err(err) => {
+                self.error_callback(err);
+            }
+        }
     }
 }
