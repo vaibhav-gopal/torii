@@ -95,7 +95,7 @@ pub fn check_validation_layer_support(debug_module_prop: &DebugModuleProp, entry
             .enumerate_instance_layer_properties()
             .expect("Failed to enumerate Instance Layers Properties");
 
-        if layer_properties.len() <= 0 {
+        if layer_properties.is_empty() {
             eprintln!("No available layers.");
             return false;
         } else {
