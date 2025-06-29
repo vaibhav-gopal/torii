@@ -11,12 +11,14 @@ mod windows;
 pub use windows::*;
 
 pub struct AppWindowOptions {
+    pub init_first_window: bool,
     pub resume_mask: WindowIdentifierMask,
 }
 
 impl Default for AppWindowOptions {
     fn default() -> Self {
         AppWindowOptions {
+            init_first_window: true,
             resume_mask: 0b1
         }
     }
@@ -24,6 +26,9 @@ impl Default for AppWindowOptions {
 
 pub enum AppEvents {
     CreateWindow,
+    CreateAndResumeWindow(WindowIdentifier),
+    ResumeWindow(WindowIdentifier),
+    SuspendWindow(WindowIdentifier),
     KillWindow(WindowIdentifier)
 }
 
@@ -48,7 +53,7 @@ impl AppHandler {
 
         let event_loop_proxy = event_loop.create_proxy();
 
-        let mut app_handler = AppHandler {
+        let app_handler = AppHandler {
             event_loop: Some(event_loop),
             event_loop_proxy,
             error_callback: None,
@@ -56,18 +61,24 @@ impl AppHandler {
             window_builder: WindowObjectBuilder::default(),
             window_options: AppWindowOptions::default()
         };
-        
-        app_handler.windows.push(app_handler.window_builder.build());
 
         Ok(app_handler)
     }
     
-    pub fn start_loop(mut self) -> Result<Self> {
+    fn init(&mut self) -> Result<()> {
+        if (self.window_options.init_first_window) {
+            self.windows.push(self.window_builder.build());
+        }
+        Ok(())
+    }
+    
+    pub fn run_loop(&mut self) -> Result<()> {
+        self.init()?;
         self.event_loop.take()
             .ok_or(StartLoopError::EventLoopAlreadyConsumedError)?
             .run_app(&mut self)
             .map_err(|e| StartLoopError::EventLoopRunAppError(e))?;
-        Ok(self)
+        Ok(())
     }
     
     pub fn send_event(&self, event: AppEvents) -> Result<()> {
@@ -112,7 +123,13 @@ impl AppHandler {
         Ok(())
     }
     
-    fn create_window(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+    fn create_window(&mut self) -> Result<()> {
+        let mut window_obj = self.window_builder.build();
+        self.windows.push(window_obj);
+        Ok(())
+    }
+
+    fn create_and_resume_window(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         let mut window_obj = self.window_builder.build();
         let window = event_loop
             .create_window(window_obj.attr.clone())
@@ -131,11 +148,6 @@ impl AppHandler {
 
 impl ApplicationHandler<AppEvents> for AppHandler {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.windows.is_empty() {
-            if let Err(err) = self.create_window(event_loop) {
-                self.error_callback(err);
-            }
-        }
         if let Err(err) = self.resume_window(event_loop, WindowIdentifier::Mask(self.window_options.resume_mask)) {
             self.error_callback(err);
         }
@@ -144,7 +156,16 @@ impl ApplicationHandler<AppEvents> for AppHandler {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvents) {
         let result = match event {
             AppEvents::CreateWindow => {
-                self.create_window(event_loop)
+                self.create_window()
+            },
+            AppEvents::CreateAndResumeWindow(id) => {
+                self.create_and_resume_window(event_loop)
+            },
+            AppEvents::ResumeWindow(id) => {
+                self.resume_window(event_loop, id)
+            },
+            AppEvents::SuspendWindow(id) => { 
+                self.suspend_window(id)
             },
             AppEvents::KillWindow(id) => {
                 self.destroy_window(id)
