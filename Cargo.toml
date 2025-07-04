@@ -1,7 +1,7 @@
-[workspace]
+﻿[workspace]
 resolver = "2"
 
-members = [ "torii_core",
+members = [
     "torii_engine",
-    "torii_game",
+    "torii_game"
 ]
